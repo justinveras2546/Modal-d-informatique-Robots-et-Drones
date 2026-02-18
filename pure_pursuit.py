@@ -22,7 +22,7 @@ class PurePursuit(object):
 
         # --- OPTIMISATION PERFORMANCE ---
         # 1. On charge le CSV UNE SEULE FOIS au démarrage.
-        # Plus jamais on ne touchera au disque dur pendant que le robot roule.
+        # Plus jamais on ne touchera au disque dur pendant que le robot roule
         csv_path = '/home/justin/catkin_ws/src/pure_pursuit/src/course.csv'
         try:
             self.df = pd.read_csv(csv_path, header=None, names=['x', 'y', 'z', 'w'])
