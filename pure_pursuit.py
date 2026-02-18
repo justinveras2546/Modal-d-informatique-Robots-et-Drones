@@ -11,37 +11,35 @@ class PurePursuit(object):
     def __init__(self):
         rospy.init_node('pure_pursuit_node')
 
-        # --- PARAMETRES ---
+        # Paramètres de base
         self.LOOKAHEAD_DISTANCE = 0.6
         self.VELOCITY = 3
         self.MAX_STEER = 0.4189 
         self.map_frame = 'map'
-        
-        # Topic de commande (souvent /drive ou /nav en simu)
         self.drive_topic = '/nav' 
 
-        # --- OPTIMISATION PERFORMANCE ---
-        # 1. On charge le CSV UNE SEULE FOIS au démarrage.
-        # Plus jamais on ne touchera au disque dur pendant que le robot roule
-        csv_path = '/home/justin/catkin_ws/src/pure_pursuit/src/course.csv'
+        # Chargement CSV unique pour la performance
+        csv_path = '/home/justin/catkin_ws/src/pure_pursuit/src/track2.csv'
         try:
             self.df = pd.read_csv(csv_path, header=None, names=['x', 'y', 'z', 'w'])
-            rospy.loginfo(f"Trajectoire chargée en mémoire : {len(self.df)} points.")
+            rospy.loginfo(f"Trajectoire chargée : {len(self.df)} points.")
         except Exception as e:
             rospy.logerr(f"Erreur CSV : {e}")
             self.df = pd.DataFrame({'x': [0], 'y': [0]})
 
-        # Publishers / Subscribers
+        # Pubs et Subs
         self.sub = rospy.Subscriber('/odom', Odometry, self.pose_callback, queue_size=1)
         self.drive_pub = rospy.Publisher(self.drive_topic, AckermannDriveStamped, queue_size=1)
         self.marker_pub = rospy.Publisher('/visual_goal', Marker, queue_size=1)
 
     def get_yaw_from_quaternion(self, q):
+        # Conversion quaternion vers angle lacet
         siny_cosp = 2 * (q.w * q.z + q.x * q.y)
         cosy_cosp = 1 - 2 * (q.y * q.y + q.z * q.z)
         return math.atan2(siny_cosp, cosy_cosp)
 
     def transformation_repere(self, robot_x, robot_y, robot_theta, goal_x, goal_y):
+        # Passage du repère global au repère local robot
         dx = goal_x - robot_x
         dy = goal_y - robot_y
         c = np.cos(robot_theta)
@@ -51,6 +49,7 @@ class PurePursuit(object):
         return local_x, local_y
 
     def markerPose(self, mark_x, mark_y):
+        # Marqueur pour visualiser la cible dans RViz
         marker = Marker()
         marker.header.frame_id = self.map_frame
         marker.header.stamp = rospy.Time.now()
@@ -66,24 +65,19 @@ class PurePursuit(object):
         self.marker_pub.publish(marker)
 
     def pose_callback(self, pose_msg):
-        
-        
-        # 1. Lecture position
+        # 1. Lecture position et orientation
         robot_x = pose_msg.pose.pose.position.x
         robot_y = pose_msg.pose.pose.position.y
         orientation_q = pose_msg.pose.pose.orientation
         robot_theta = self.get_yaw_from_quaternion(orientation_q)
 
-       #rospy.loginfo(f"Robot Pose: x={robot_x:.2f}, y={robot_y:.2f}, theta={robot_theta:.2f}")
-
+        # 2. Calcul des distances aux waypoints
         dx = self.df['x'] - robot_x
         dy = self.df['y'] - robot_y
         self.df['dist_sq'] = dx**2 + dy**2
 
-        # 3. Filtrage : Points devant
+        # 3. Recherche du point cible (devant et à bonne distance)
         x_local = dx * np.cos(robot_theta) + dy * np.sin(robot_theta)
-        
-        # Masque logique
         masque_valide = (x_local > 0) & (self.df['dist_sq'] >= self.LOOKAHEAD_DISTANCE**2)
         candidats = self.df[masque_valide]
 
@@ -91,39 +85,31 @@ class PurePursuit(object):
             if self.df.empty: return
             target_row = self.df.sort_values('dist_sq').iloc[0]
         else:
-            # On prend le premier point valide trié par distance
             target_row = candidats.sort_values('dist_sq').iloc[0]
 
         goal_x = target_row['x']
         goal_y = target_row['y']
-
-        # Visualisation
         self.markerPose(goal_x, goal_y)
 
-        # 4. Transformation et Commande
+        # 4. Calcul de la courbure et du braquage
         local_x, local_y = self.transformation_repere(robot_x, robot_y, robot_theta, goal_x, goal_y)
-
         L2 = local_x**2 + local_y**2
         if L2 == 0: return
 
         curvature = 2 * local_y / L2
         steering_angle = math.atan(curvature)
 
-        # Limites & Vitesse
-       # if steering_angle > self.MAX_STEER: steering_angle = self.MAX_STEER
-        #elif steering_angle < -self.MAX_STEER: steering_angle = -self.MAX_STEER
-
+        # 5. Gestion de la vitesse selon l'angle
         speed = self.VELOCITY
         if abs(steering_angle) > 0.35:
             if abs(steering_angle) < 0.7:
-                speed = speed * 0.8
+                speed *= 0.8
             elif abs(steering_angle) < 1.0:
-                speed = speed * 0.6
+                speed *= 0.6
             else:
-                speed = speed * 0.5
+                speed *= 0.5
 
-
-        # Publication
+        # 6. Publication commande
         drive_msg = AckermannDriveStamped()
         drive_msg.header.stamp = rospy.Time.now()
         drive_msg.header.frame_id = "base_link"
